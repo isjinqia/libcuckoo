@@ -1249,12 +1249,14 @@ private:
       return table_position{b.i2, static_cast<size_type>(res2),
                             failure_key_duplicated};
     }
-    if (res1 != -1) {
-      return table_position{b.i1, static_cast<size_type>(res1), ok};
-    }
-    if (res2 != -1) {
-      return table_position{b.i2, static_cast<size_type>(res2), ok};
-    }
+      
+    //deleted by jinqi 2019.8.14
+//    if (res1 != -1) {
+//      return table_position{b.i1, static_cast<size_type>(res1), ok};
+//    }
+//    if (res2 != -1) {
+//      return table_position{b.i2, static_cast<size_type>(res2), ok};
+//    }
 
     // We are unlucky, so let's perform cuckoo hashing.
     size_type insert_bucket = 0;
@@ -1632,44 +1634,122 @@ private:
   // out of space, it fails.
   //
   // throws hashpower_changed if it changed during the search
-  template <typename TABLE_MODE>
-  b_slot slot_search(const size_type hp, const size_type i1,
-                     const size_type i2) {
-    b_queue q;
-    // The initial pathcode informs cuckoopath_search which bucket the path
-    // starts on
-    q.enqueue(b_slot(i1, 0, 0));
-    q.enqueue(b_slot(i2, 1, 0));
-    while (!q.empty()) {
-      b_slot x = q.dequeue();
-      auto lock_manager = lock_one(hp, x.bucket, TABLE_MODE());
-      bucket &b = buckets_[x.bucket];
-      // Picks a (sort-of) random slot to start from
-      size_type starting_slot = x.pathcode % slot_per_bucket();
-      for (size_type i = 0; i < slot_per_bucket(); ++i) {
-        uint16_t slot = (starting_slot + i) % slot_per_bucket();
-        if (!b.occupied(slot)) {
-          // We can terminate the search here
-          x.pathcode = x.pathcode * slot_per_bucket() + slot;
-          return x;
+    
+    //changed by jinqi 2019.8.14, new function slot_search() below.
+//  template <typename TABLE_MODE>
+//  b_slot slot_search(const size_type hp, const size_type i1,
+//                     const size_type i2) {
+//    b_queue q;
+//    // The initial pathcode informs cuckoopath_search which bucket the path
+//    // starts on
+//    q.enqueue(b_slot(i1, 0, 0));
+//    q.enqueue(b_slot(i2, 1, 0));
+//    while (!q.empty()) {
+//      b_slot x = q.dequeue();
+//      auto lock_manager = lock_one(hp, x.bucket, TABLE_MODE());
+//      bucket &b = buckets_[x.bucket];
+//      // Picks a (sort-of) random slot to start from
+//      size_type starting_slot = x.pathcode % slot_per_bucket();
+//      for (size_type i = 0; i < slot_per_bucket(); ++i) {
+//        uint16_t slot = (starting_slot + i) % slot_per_bucket();
+//        if (!b.occupied(slot)) {
+//          // We can terminate the search here
+//          x.pathcode = x.pathcode * slot_per_bucket() + slot;
+//          return x;
+//        }
+//
+//        // If x has less than the maximum number of path components,
+//        // create a new b_slot item, that represents the bucket we would
+//        // have come from if we kicked out the item at this slot.
+//        const partial_t partial = b.partial(slot);
+//        if (x.depth < MAX_BFS_PATH_LEN - 1) {
+//          assert(!q.full());
+//          b_slot y(alt_index(hp, partial, x.bucket),
+//                   x.pathcode * slot_per_bucket() + slot, x.depth + 1);
+//          q.enqueue(y);
+//        }
+//      }
+//    }
+//    // We didn't find a short-enough cuckoo path, so the search terminated.
+//    // Return a failure value.
+//    return b_slot(0, 0, -1);
+//  }
+    
+    template <typename TABLE_MODE>
+    b_slot slot_search(const size_type hp, const size_type i1,
+                       const size_type i2) {
+        b_queue q;
+        b_slot flag;
+        int count = 4;
+        // The initial pathcode informs cuckoopath_search which bucket the path
+        // starts on
+        q.enqueue(b_slot(i1, 0, 0));
+        q.enqueue(b_slot(i2, 1, 0));
+    BEGIN:
+        while (!q.empty()) {
+            b_slot x = q.dequeue();
+            if(x.bucket == std::numeric_limits<size_type>::max()){
+                size_type starting_slot = x.pathcode % slot_per_bucket();
+                for (size_type i = 0; i < slot_per_bucket(); ++i) {
+                    uint16_t slot = (starting_slot + i) % slot_per_bucket();
+                    if (x.depth < MAX_BFS_PATH_LEN - 1) {
+                        assert(!q.full());
+                        b_slot z(std::numeric_limits<size_type>::max(),x.pathcode * slot_per_bucket() + slot, x.depth + 1);
+                        q.enqueue(z);
+                    }
+                }
+                goto BEGIN;
+            }
+            auto lock_manager = lock_one(hp, x.bucket, TABLE_MODE());
+            bucket &b = buckets_[x.bucket];
+            // Picks a (sort-of) random slot to start from
+            size_type starting_slot = x.pathcode % slot_per_bucket();
+            for (size_type i = 0; i < slot_per_bucket(); ++i) {
+                uint16_t slot = (starting_slot + i) % slot_per_bucket();
+                if (!b.occupied(slot)) {
+                    int count1 = 0;
+                    for(size_type i = 0; i<slot_per_bucket(); i++){
+                        if(!b.occupied(i)){
+                            count1++;
+                        }
+                    }
+                    if(count1<count) {
+                        count =count1;
+                        flag = x;
+                        flag.pathcode = x.pathcode * slot_per_bucket() + slot;
+                    }
+                    if(count == 0){
+                        return flag;
+                    }
+                }
+                
+                // If x has less than the maximum number of path components,
+                // create a new b_slot item, that represents the bucket we would
+                // have come from if we kicked out the item at this slot.
+                // const partial_t partial = b.partial(slot);
+                if (x.depth < MAX_BFS_PATH_LEN - 1) {
+                    assert(!q.full());
+                    if(b.occupied(slot)) {
+                        const partial_t partial = b.partial(slot);
+                        b_slot y(alt_index(hp, partial, x.bucket),
+                                 x.pathcode * slot_per_bucket() + slot, x.depth + 1);
+                        q.enqueue(y);
+                    }else{
+                        b_slot z(std::numeric_limits<size_type>::max(),x.pathcode * slot_per_bucket() + slot, x.depth + 1);
+                        q.enqueue(z);
+                    }
+                    
+                }
+            }
         }
-
-        // If x has less than the maximum number of path components,
-        // create a new b_slot item, that represents the bucket we would
-        // have come from if we kicked out the item at this slot.
-        const partial_t partial = b.partial(slot);
-        if (x.depth < MAX_BFS_PATH_LEN - 1) {
-          assert(!q.full());
-          b_slot y(alt_index(hp, partial, x.bucket),
-                   x.pathcode * slot_per_bucket() + slot, x.depth + 1);
-          q.enqueue(y);
+        // We didn't find a short-enough cuckoo path, so the search terminated.
+        // Return a failure value.
+        if(count<4){
+            return flag;
+        }else {
+            return b_slot(0, 0, -1);
         }
-      }
     }
-    // We didn't find a short-enough cuckoo path, so the search terminated.
-    // Return a failure value.
-    return b_slot(0, 0, -1);
-  }
 
   // cuckoo_fast_double will double the size of the table by taking advantage
   // of the properties of index_hash and alt_index. If the key's move
